@@ -15,7 +15,7 @@ async function handleDraftReply(chatContext) {
     throw new Error('Please set your OpenRouter API Key in the extension popup.');
   }
 
-  const model = data.aiModel || 'google/gemini-2.5-flash';
+  const model = data.aiModel || 'google/gemini-1.5-flash';
   const persona = data.aiPersona || 'You are a professional freelancer on Fiverr.';
   const memory = data.aiMemory || [];
 
