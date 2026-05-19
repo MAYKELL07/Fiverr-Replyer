@@ -73,3 +73,53 @@ button:hover {
   font-size: 12px;
   color: #1dbf73;
 }
+
+.label-row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.link-btn {
+  background: transparent;
+  color: #108a52;
+  border: 0;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  background: transparent;
+  color: #0b6b3f;
+  text-decoration: underline;
+}
+
+.link-btn:disabled {
+  color: #999;
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+.section-card {
+  background: #fff;
+  border: 1px solid #dfe5e1;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.checkbox-row input {
+  margin: 0;
+}

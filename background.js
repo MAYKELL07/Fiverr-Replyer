@@ -1,29 +1,56 @@
+const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const MEM0_HOST = 'https://api.mem0.ai';
+const DEFAULT_MODEL_CANDIDATES = [
+  'google/gemini-2.5-flash',
+  'google/gemini-2.0-flash-001',
+  'google/gemini-flash-1.5',
+  'openai/gpt-4o-mini',
+  'openrouter/auto'
+];
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'draftReply') {
     handleDraftReply(request.chatContext)
       .then(response => sendResponse({ success: true, ...response }))
       .catch(error => sendResponse({ success: false, error: error.message }));
-    
-    return true; // Keep the message channel open for async response
+
+    return true;
+  }
+
+  if (request.action === 'getOpenRouterModels') {
+    getOpenRouterModels({ forceRefresh: request.forceRefresh })
+      .then(models => sendResponse({ success: true, models }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+
+    return true;
   }
 });
 
 async function handleDraftReply(chatContext) {
-  const data = await chrome.storage.local.get(['openRouterApiKey', 'aiModel', 'aiPersona', 'aiMemory']);
-  
+  const data = await chrome.storage.local.get([
+    'openRouterApiKey',
+    'aiModel',
+    'aiPersona',
+    'aiMemory',
+    'mem0ApiKey',
+    'mem0UserId',
+    'mem0Enabled'
+  ]);
+
   if (!data.openRouterApiKey) {
     throw new Error('Please set your OpenRouter API Key in the extension popup.');
   }
 
-  const model = data.aiModel || 'google/gemini-1.5-flash';
+  const model = await resolveOpenRouterModel(data.aiModel);
   const persona = data.aiPersona || 'You are a professional freelancer on Fiverr.';
-  const memory = data.aiMemory || [];
+  const memory = await getRelevantMemory(chatContext, data);
 
   const systemPrompt = `
 You are an AI assistant helping a Fiverr freelancer draft a reply to a client.
 Persona/Rules: ${persona}
 
-Memory (Stored facts about clients or projects):
+Relevant long-term memory:
 ${memory.length > 0 ? memory.map(m => '- ' + m).join('\n') : 'No memory yet.'}
 
 Instructions:
@@ -40,7 +67,7 @@ Only output valid JSON. Do not include markdown code blocks around the JSON.
 
   const userPrompt = `Chat Context:\n\n${chatContext}`;
 
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const response = await fetch(OPENROUTER_CHAT_URL, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${data.openRouterApiKey}`,
@@ -49,12 +76,12 @@ Only output valid JSON. Do not include markdown code blocks around the JSON.
       'X-Title': 'Fiverr AI Reply Drafter'
     },
     body: JSON.stringify({
-      model: model,
+      model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      response_format: { type: "json_object" }
+      response_format: { type: 'json_object' }
     })
   });
 
@@ -64,34 +91,201 @@ Only output valid JSON. Do not include markdown code blocks around the JSON.
   }
 
   const jsonResponse = await response.json();
-  const rawContent = jsonResponse.choices[0].message.content;
-  
+  const rawContent = jsonResponse.choices?.[0]?.message?.content || '';
+
   let parsedContent;
   try {
-    // Attempt to parse JSON. Sometimes LLMs include markdown ```json ... ```
-    let cleanContent = rawContent.trim();
-    if (cleanContent.startsWith('```json')) {
-      cleanContent = cleanContent.replace(/^```json\n/, '').replace(/\n```$/, '');
-    }
-    parsedContent = JSON.parse(cleanContent);
+    parsedContent = JSON.parse(stripJsonMarkdown(rawContent));
   } catch (e) {
-    console.error("Failed to parse JSON from AI response:", rawContent);
-    // Fallback: assume the whole response is the reply
+    console.error('Failed to parse JSON from AI response:', rawContent);
     parsedContent = { reply: rawContent, new_facts_to_save: [] };
   }
 
-  // Update Memory
-  if (parsedContent.new_facts_to_save && parsedContent.new_facts_to_save.length > 0) {
-    const updatedMemory = [...memory, ...parsedContent.new_facts_to_save];
-    // Keep memory to last 50 items to prevent bloat
-    if (updatedMemory.length > 50) {
-      updatedMemory.splice(0, updatedMemory.length - 50);
-    }
-    await chrome.storage.local.set({ aiMemory: updatedMemory });
-  }
+  const newFacts = Array.isArray(parsedContent.new_facts_to_save)
+    ? parsedContent.new_facts_to_save.map(fact => String(fact).trim()).filter(Boolean)
+    : [];
+
+  const factsAdded = await saveMemory(newFacts, chatContext, data);
 
   return {
     reply: parsedContent.reply,
-    factsAdded: parsedContent.new_facts_to_save ? parsedContent.new_facts_to_save.length : 0
+    factsAdded,
+    modelUsed: model
   };
+}
+
+async function getOpenRouterModels({ forceRefresh = false } = {}) {
+  const cached = await chrome.storage.local.get(['openRouterModels', 'openRouterModelsFetchedAt']);
+  const maxAgeMs = 1000 * 60 * 60 * 6;
+
+  if (!forceRefresh && Array.isArray(cached.openRouterModels) && cached.openRouterModels.length > 0) {
+    const age = Date.now() - Number(cached.openRouterModelsFetchedAt || 0);
+    if (age < maxAgeMs) return cached.openRouterModels;
+  }
+
+  const response = await fetch(OPENROUTER_MODELS_URL, { method: 'GET' });
+  if (!response.ok) {
+    throw new Error(`Could not load OpenRouter models: ${response.status} ${await response.text()}`);
+  }
+
+  const payload = await response.json();
+  const models = (payload.data || [])
+    .filter(model => model && model.id)
+    .map(model => ({
+      id: model.id,
+      name: model.name || model.id,
+      contextLength: model.context_length || model.contextLength || 0,
+      promptPrice: Number(model.pricing?.prompt || 0),
+      completionPrice: Number(model.pricing?.completion || 0)
+    }))
+    .sort(sortModelsForUi);
+
+  await chrome.storage.local.set({
+    openRouterModels: models,
+    openRouterModelsFetchedAt: Date.now()
+  });
+
+  return models;
+}
+
+async function resolveOpenRouterModel(savedModel) {
+  let models = [];
+  try {
+    models = await getOpenRouterModels();
+  } catch (error) {
+    console.warn('[Fiverr AI] Could not refresh OpenRouter models, using cached/default model if possible.', error);
+    const cached = await chrome.storage.local.get(['openRouterModels']);
+    models = cached.openRouterModels || [];
+  }
+
+  const ids = new Set(models.map(model => model.id));
+  if (savedModel && ids.has(savedModel)) return savedModel;
+
+  const fallback = DEFAULT_MODEL_CANDIDATES.find(id => ids.has(id)) || models[0]?.id || savedModel || 'openrouter/auto';
+  if (fallback !== savedModel) {
+    await chrome.storage.local.set({ aiModel: fallback });
+  }
+  return fallback;
+}
+
+function sortModelsForUi(a, b) {
+  const aFree = a.promptPrice === 0 && a.completionPrice === 0;
+  const bFree = b.promptPrice === 0 && b.completionPrice === 0;
+  if (aFree !== bFree) return aFree ? -1 : 1;
+  return a.name.localeCompare(b.name);
+}
+
+async function getRelevantMemory(chatContext, data) {
+  if (data.mem0Enabled && data.mem0ApiKey) {
+    try {
+      const memories = await mem0Search(chatContext, data);
+      if (memories.length > 0) return memories;
+    } catch (error) {
+      console.warn('[Fiverr AI] Mem0 search failed; falling back to local memory.', error);
+    }
+  }
+
+  return Array.isArray(data.aiMemory) ? data.aiMemory.slice(-20) : [];
+}
+
+async function saveMemory(newFacts, chatContext, data) {
+  if (newFacts.length === 0) return 0;
+
+  if (data.mem0Enabled && data.mem0ApiKey) {
+    try {
+      await mem0Add(newFacts, chatContext, data);
+      return newFacts.length;
+    } catch (error) {
+      console.warn('[Fiverr AI] Mem0 save failed; saving facts locally instead.', error);
+    }
+  }
+
+  const existing = Array.isArray(data.aiMemory) ? data.aiMemory : [];
+  const updatedMemory = [...existing, ...newFacts].slice(-50);
+  await chrome.storage.local.set({ aiMemory: updatedMemory });
+  return newFacts.length;
+}
+
+async function mem0Search(chatContext, data) {
+  const response = await fetch(`${MEM0_HOST}/v3/memories/search/`, {
+    method: 'POST',
+    headers: mem0Headers(data.mem0ApiKey),
+    body: JSON.stringify({
+      query: chatContext.slice(-4000),
+      output_format: 'v1.1',
+      top_k: 10,
+      filters: mem0Filters(data)
+    })
+  });
+
+  if (!response.ok) throw new Error(`Mem0 search error: ${response.status} ${await response.text()}`);
+
+  const payload = await response.json();
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  return results
+    .map(item => item.memory || item.data?.memory || item.text || '')
+    .map(text => String(text).trim())
+    .filter(Boolean)
+    .slice(0, 10);
+}
+
+async function mem0Add(newFacts, chatContext, data) {
+  const messages = [
+    {
+      role: 'user',
+      content: `Fiverr conversation context:\n${chatContext.slice(-3000)}\n\nImportant facts to remember:\n${newFacts.map(fact => `- ${fact}`).join('\n')}`
+    }
+  ];
+
+  const response = await fetch(`${MEM0_HOST}/v3/memories/add/`, {
+    method: 'POST',
+    headers: mem0Headers(data.mem0ApiKey),
+    body: JSON.stringify({
+      messages,
+      user_id: getMem0UserId(data),
+      app_id: 'fiverr-reply-drafter',
+      infer: true,
+      metadata: {
+        source: 'fiverr-reply-drafter',
+        url: extractUrlFromContext(chatContext),
+        saved_at: new Date().toISOString()
+      }
+    })
+  });
+
+  if (!response.ok) throw new Error(`Mem0 add error: ${response.status} ${await response.text()}`);
+  return response.json().catch(() => null);
+}
+
+function mem0Headers(apiKey) {
+  return {
+    'Authorization': `Token ${apiKey}`,
+    'Content-Type': 'application/json'
+  };
+}
+
+function mem0Filters(data) {
+  return {
+    user_id: getMem0UserId(data),
+    app_id: 'fiverr-reply-drafter'
+  };
+}
+
+function getMem0UserId(data) {
+  return data.mem0UserId || 'fiverr-freelancer';
+}
+
+function extractUrlFromContext(chatContext) {
+  const match = String(chatContext).match(/URL:\s*(\S+)/);
+  return match ? match[1] : '';
+}
+
+function stripJsonMarkdown(content) {
+  let cleanContent = String(content || '').trim();
+  if (cleanContent.startsWith('```json')) {
+    cleanContent = cleanContent.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+  } else if (cleanContent.startsWith('```')) {
+    cleanContent = cleanContent.replace(/^```\s*/, '').replace(/\s*```$/, '');
+  }
+  return cleanContent;
 }

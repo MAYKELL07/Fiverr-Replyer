@@ -8,21 +8,21 @@
 <body>
   <div class="container">
     <h2>Fiverr AI Drafter</h2>
-    
+
     <div class="form-group">
       <label for="apiKey">OpenRouter API Key:</label>
       <input type="password" id="apiKey" placeholder="sk-or-v1-...">
     </div>
 
     <div class="form-group">
-      <label for="model">AI Model:</label>
+      <div class="label-row">
+        <label for="model">OpenRouter Model:</label>
+        <button id="refreshModelsBtn" class="link-btn" type="button">Refresh</button>
+      </div>
       <select id="model">
-        <option value="google/gemini-2.5-flash">Google: Gemini 2.5 Flash</option>
-        <option value="google/gemini-1.5-flash">Google: Gemini 1.5 Flash</option>
-        <option value="anthropic/claude-3-haiku">Anthropic: Claude 3 Haiku</option>
-        <option value="meta-llama/llama-3-8b-instruct:free">Llama 3 8B (Free)</option>
-        <option value="google/gemma-7b-it:free">Gemma 7B (Free)</option>
+        <option value="">Loading live OpenRouter models...</option>
       </select>
+      <small id="modelStatus">Models are loaded from OpenRouter's live /models endpoint to avoid removed IDs.</small>
     </div>
 
     <div class="form-group">
@@ -30,10 +30,26 @@
       <textarea id="persona" rows="3" placeholder="e.g., I am a web developer. I write politely and concisely."></textarea>
     </div>
 
+    <div class="section-card">
+      <label class="checkbox-row">
+        <input type="checkbox" id="mem0Enabled">
+        <span>Use Mem0 AI memory</span>
+      </label>
+      <div class="form-group">
+        <label for="mem0ApiKey">Mem0 API Key:</label>
+        <input type="password" id="mem0ApiKey" placeholder="Mem0 Platform API key">
+      </div>
+      <div class="form-group">
+        <label for="mem0UserId">Mem0 User ID:</label>
+        <input type="text" id="mem0UserId" placeholder="fiverr-freelancer">
+      </div>
+      <small>Uses Mem0's cloud API endpoints from the official mem0ai client. If Mem0 is disabled or fails, local Chrome memory is used as fallback.</small>
+    </div>
+
     <div class="form-group">
-      <label for="memory">AI Memory (Saved Facts):</label>
-      <textarea id="memory" rows="5" placeholder="Saved facts will appear here..."></textarea>
-      <small>The AI will read and update this memory automatically based on your conversations.</small>
+      <label for="memory">Local Fallback Memory:</label>
+      <textarea id="memory" rows="5" placeholder="Local saved facts will appear here..."></textarea>
+      <small>Only used when Mem0 is disabled or unavailable.</small>
     </div>
 
     <div class="actions">

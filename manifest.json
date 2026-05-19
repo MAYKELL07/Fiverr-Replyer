@@ -10,7 +10,8 @@
   ],
   "host_permissions": [
     "https://*.fiverr.com/*",
-    "https://openrouter.ai/*"
+    "https://openrouter.ai/*",
+    "https://api.mem0.ai/*"
   ],
   "action": {
     "default_popup": "popup.html",
