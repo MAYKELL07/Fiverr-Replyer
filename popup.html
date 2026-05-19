@@ -30,6 +30,20 @@
       <textarea id="persona" rows="3" placeholder="e.g., I am a web developer. I write politely and concisely."></textarea>
     </div>
 
+
+    <div class="section-card">
+      <label class="checkbox-row">
+        <input type="checkbox" id="linkProcessingEnabled">
+        <span>Read public client links/docs</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="debugMode">
+        <span>Debug mode</span>
+      </label>
+      <small>When enabled, the extension tries to read public Google Docs, PDFs, and web links. Debug mode writes detailed logs to the extension service worker console and stores the latest run summary.</small>
+      <textarea id="debugOutput" rows="4" readonly placeholder="Latest debug summary will appear here when debug mode is enabled."></textarea>
+    </div>
+
     <div class="section-card">
       <label class="checkbox-row">
         <input type="checkbox" id="mem0Enabled">

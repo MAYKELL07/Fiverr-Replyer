@@ -14,6 +14,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const modelSelect = document.getElementById('model');
   const personaInput = document.getElementById('persona');
   const memoryInput = document.getElementById('memory');
+  const linkProcessingEnabledInput = document.getElementById('linkProcessingEnabled');
+  const debugModeInput = document.getElementById('debugMode');
+  const debugOutput = document.getElementById('debugOutput');
   const mem0EnabledInput = document.getElementById('mem0Enabled');
   const mem0ApiKeyInput = document.getElementById('mem0ApiKey');
   const mem0UserIdInput = document.getElementById('mem0UserId');
@@ -27,6 +30,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     'aiModel',
     'aiPersona',
     'aiMemory',
+    'linkProcessingEnabled',
+    'debugMode',
+    'fiverrAiLastDebug',
     'mem0Enabled',
     'mem0ApiKey',
     'mem0UserId'
@@ -35,6 +41,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (savedSettings.openRouterApiKey) apiKeyInput.value = savedSettings.openRouterApiKey;
   if (savedSettings.aiPersona) personaInput.value = savedSettings.aiPersona;
   if (savedSettings.mem0ApiKey) mem0ApiKeyInput.value = savedSettings.mem0ApiKey;
+  linkProcessingEnabledInput.checked = savedSettings.linkProcessingEnabled !== false;
+  debugModeInput.checked = Boolean(savedSettings.debugMode);
+  debugOutput.value = savedSettings.fiverrAiLastDebug || '';
+
+  // Live-update debug output every 2 s so the user sees the latest run without saving
+  setInterval(() => {
+    chrome.storage.local.get(['fiverrAiLastDebug'], (r) => {
+      debugOutput.value = r.fiverrAiLastDebug || '';
+    });
+  }, 2000);
+
   mem0EnabledInput.checked = Boolean(savedSettings.mem0Enabled);
   mem0UserIdInput.value = savedSettings.mem0UserId || 'fiverr-freelancer';
 
@@ -52,6 +69,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       aiModel: modelSelect.value,
       aiPersona: personaInput.value.trim(),
       aiMemory: memoryLines,
+      linkProcessingEnabled: linkProcessingEnabledInput.checked,
+      debugMode: debugModeInput.checked,
       mem0Enabled: mem0EnabledInput.checked,
       mem0ApiKey: mem0ApiKeyInput.value.trim(),
       mem0UserId: mem0UserIdInput.value.trim() || 'fiverr-freelancer'

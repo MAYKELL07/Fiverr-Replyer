@@ -1,6 +1,8 @@
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const MEM0_HOST = 'https://api.mem0.ai';
+const MAX_LINKS_TO_PROCESS = 5;
+const MAX_EXTRACTED_CHARS_PER_LINK = 5000;
 const DEFAULT_MODEL_CANDIDATES = [
   'google/gemini-2.5-flash',
   'google/gemini-2.0-flash-001',
@@ -33,6 +35,8 @@ async function handleDraftReply(chatContext) {
     'aiModel',
     'aiPersona',
     'aiMemory',
+    'linkProcessingEnabled',
+    'debugMode',
     'mem0ApiKey',
     'mem0UserId',
     'mem0Enabled'
@@ -42,9 +46,15 @@ async function handleDraftReply(chatContext) {
     throw new Error('Please set your OpenRouter API Key in the extension popup.');
   }
 
+  await debugLog(data, 'Draft requested', { originalContextLength: chatContext.length });
+
+  const enrichedChatContext = data.linkProcessingEnabled === false
+    ? chatContext
+    : await enrichChatContextWithLinks(chatContext, data);
+
   const model = await resolveOpenRouterModel(data.aiModel);
   const persona = data.aiPersona || 'You are a professional freelancer on Fiverr.';
-  const memory = await getRelevantMemory(chatContext, data);
+  const memory = await getRelevantMemory(enrichedChatContext, data);
 
   const systemPrompt = `
 You are an AI assistant helping a Fiverr freelancer draft a reply to a client.
@@ -56,8 +66,9 @@ ${memory.length > 0 ? memory.map(m => '- ' + m).join('\n') : 'No memory yet.'}
 Instructions:
 1. Read the provided chat context.
 2. Draft a polite, professional, and helpful reply.
-3. Extract any NEW important facts from the conversation (e.g., buyer's name, project requirements, budget, deadlines) that should be saved to memory. DO NOT extract temporary greetings.
-4. Output your response STRICTLY as a JSON object with the following schema:
+3. If the context includes extracted document/link content, use it when drafting. If a client link is private, blocked, unsupported, or only a PDF without extractable text, do not pretend you read it; politely ask the buyer to grant access, paste the requirements, or upload a text-readable file.
+4. Extract any NEW important facts from the conversation (e.g., buyer's name, project requirements, budget, deadlines) that should be saved to memory. DO NOT extract temporary greetings.
+5. Output your response STRICTLY as a JSON object with the following schema:
 {
   "reply": "The drafted reply text here",
   "new_facts_to_save": ["fact 1", "fact 2"]
@@ -65,7 +76,7 @@ Instructions:
 Only output valid JSON. Do not include markdown code blocks around the JSON.
 `;
 
-  const userPrompt = `Chat Context:\n\n${chatContext}`;
+  const userPrompt = 'Chat Context:\n\n' + enrichedChatContext;
 
   const response = await fetch(OPENROUTER_CHAT_URL, {
     method: 'POST',
@@ -105,13 +116,266 @@ Only output valid JSON. Do not include markdown code blocks around the JSON.
     ? parsedContent.new_facts_to_save.map(fact => String(fact).trim()).filter(Boolean)
     : [];
 
-  const factsAdded = await saveMemory(newFacts, chatContext, data);
+  const factsAdded = await saveMemory(newFacts, enrichedChatContext, data);
+  await debugLog(data, 'Draft completed', { modelUsed: model, factsAdded, enrichedContextLength: enrichedChatContext.length });
 
   return {
     reply: parsedContent.reply,
     factsAdded,
     modelUsed: model
   };
+}
+
+async function enrichChatContextWithLinks(chatContext, data) {
+  const urls = extractUrls(chatContext).slice(0, MAX_LINKS_TO_PROCESS);
+  if (urls.length === 0) return chatContext;
+
+  await debugLog(data, 'Links detected', { urls });
+
+  const summaries = [];
+  for (const url of urls) {
+    const result = await extractLinkedResource(url, data);
+    summaries.push(formatLinkedResourceResult(result));
+  }
+
+  const linkContext = summaries.filter(Boolean).join('\n\n');
+  if (!linkContext) return chatContext;
+
+  return `${chatContext}\n\n--- Extracted Client Links / Attachments ---\n${linkContext}`.slice(-18000);
+}
+
+function extractUrls(text) {
+  const matches = String(text || '').match(/https?:\/\/[^\s<>()"']+/gi) || [];
+  const cleaned = matches
+    .map(url => url.replace(/[\].,;:!?]+$/, ''))
+    .map(expandKnownRedirectUrl)
+    .filter(shouldProcessUrl);
+  return [...new Set(cleaned)];
+}
+
+async function extractLinkedResource(url, data) {
+  try {
+    const normalized = normalizeGoogleUrl(url);
+    const response = await fetchWithTimeout(normalized.fetchUrl, { method: 'GET' }, 12000);
+    const contentType = response.headers.get('content-type') || '';
+
+    if (!response.ok) {
+      return { url, status: 'inaccessible', reason: `HTTP ${response.status}`, kind: normalized.kind };
+    }
+
+    if (contentType.includes('application/pdf') || /\.pdf([?#].*)?$/i.test(url)) {
+      const bytes = await response.arrayBuffer();
+      const pdfText = extractTextFromPdfBytes(bytes);
+      if (pdfText.length > 100) {
+        return {
+          url,
+          status: 'read',
+          kind: 'pdf',
+          title: filenameFromUrl(url),
+          text: pdfText.slice(0, MAX_EXTRACTED_CHARS_PER_LINK)
+        };
+      }
+
+      return {
+        url,
+        status: 'limited',
+        kind: 'pdf',
+        title: filenameFromUrl(url),
+        text: `PDF detected (${Math.round(bytes.byteLength / 1024)} KB), but text could not be extracted reliably. Ask the client to paste the key requirements or upload a text-readable brief if the conversation does not already explain the task.`
+      };
+    }
+
+    const rawText = await response.text();
+    const extractedText = contentType.includes('text/html')
+      ? extractTextFromHtml(rawText)
+      : cleanText(rawText);
+
+    if (looksBlockedOrPrivate(extractedText)) {
+      return { url, status: 'inaccessible', reason: 'The link appears private, blocked, or requires sign-in/access.', kind: normalized.kind };
+    }
+
+    if (!extractedText || extractedText.length < 40) {
+      return { url, status: 'limited', reason: 'No useful text could be extracted.', kind: normalized.kind };
+    }
+
+    return {
+      url,
+      status: 'read',
+      kind: normalized.kind,
+      title: extractTitle(rawText) || filenameFromUrl(url),
+      text: extractedText.slice(0, MAX_EXTRACTED_CHARS_PER_LINK)
+    };
+  } catch (error) {
+    await debugLog(data, 'Link extraction failed', { url, error: error.message });
+    return { url, status: 'inaccessible', reason: error.message, kind: 'link' };
+  }
+}
+
+function shouldProcessUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return !host.endsWith('fiverr.com');
+  } catch (error) {
+    return false;
+  }
+}
+
+function expandKnownRedirectUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const candidate = parsed.searchParams.get('url') || parsed.searchParams.get('u') || parsed.searchParams.get('target');
+    if (candidate && /^https?:\/\//i.test(candidate)) return decodeURIComponent(candidate);
+  } catch (error) {
+    return url;
+  }
+  return url;
+}
+
+function normalizeGoogleUrl(url) {
+  const parsed = new URL(url);
+  const host = parsed.hostname.toLowerCase();
+
+  if (host === 'drive.google.com') {
+    const fileMatch = parsed.pathname.match(/\/file\/d\/([^/]+)/);
+    const id = fileMatch?.[1] || parsed.searchParams.get('id');
+    if (id) return { kind: 'google-drive-file', fetchUrl: `https://drive.google.com/uc?export=download&id=${id}` };
+  }
+
+  if (host === 'docs.google.com') {
+    const docMatch = parsed.pathname.match(/\/document\/d\/([^/]+)/);
+    if (docMatch) return { kind: 'google-doc', fetchUrl: `https://docs.google.com/document/d/${docMatch[1]}/export?format=txt` };
+
+    const sheetMatch = parsed.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
+    if (sheetMatch) return { kind: 'google-sheet', fetchUrl: `https://docs.google.com/spreadsheets/d/${sheetMatch[1]}/export?format=csv` };
+
+    const slidesMatch = parsed.pathname.match(/\/presentation\/d\/([^/]+)/);
+    if (slidesMatch) return { kind: 'google-slides', fetchUrl: `https://docs.google.com/presentation/d/${slidesMatch[1]}/export/txt` };
+  }
+
+  return { kind: /\.pdf([?#].*)?$/i.test(url) ? 'pdf' : 'web-link', fetchUrl: url };
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal, credentials: 'omit' });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function formatLinkedResourceResult(result) {
+  if (result.status === 'read') {
+    return `Link: ${result.url}\nType: ${result.kind}\nStatus: readable\nTitle: ${result.title || 'Untitled'}\nExtracted text:\n${result.text}`;
+  }
+
+  if (result.status === 'limited') {
+    return `Link: ${result.url}\nType: ${result.kind}\nStatus: limited\nNote: ${result.text || result.reason}`;
+  }
+
+  return `Link: ${result.url}\nType: ${result.kind}\nStatus: inaccessible\nReason: ${result.reason}\nInstruction: Ask the buyer to grant public/view access, paste the key requirements, or upload a readable brief if this link is needed.`;
+}
+
+
+function extractTextFromPdfBytes(bytes) {
+  try {
+    const raw = new TextDecoder('latin1').decode(bytes);
+    const chunks = [];
+    const literalMatches = raw.matchAll(/\(([^()]{2,500})\)\s*T[jJ]/g);
+    for (const match of literalMatches) chunks.push(unescapePdfString(match[1]));
+
+    const arrayMatches = raw.matchAll(/\[((?:\s*\([^()]{1,500}\)\s*)+)\]\s*TJ/g);
+    for (const match of arrayMatches) {
+      const inner = [...match[1].matchAll(/\(([^()]{1,500})\)/g)].map(part => unescapePdfString(part[1])).join('');
+      if (inner) chunks.push(inner);
+    }
+
+    return cleanText(chunks.join(' '));
+  } catch (error) {
+    return '';
+  }
+}
+
+function unescapePdfString(text) {
+  return String(text || '')
+    .replace(/\n/g, ' ')
+    .replace(/\r/g, ' ')
+    .replace(/\t/g, ' ')
+    .replace(/\\\(/g, '(')
+    .replace(/\\\)/g, ')')
+    .replace(/\\\\/g, '\\');
+}
+
+function extractTextFromHtml(html) {
+  return cleanText(String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'"));
+}
+
+function extractTitle(html) {
+  const match = String(html || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? cleanText(match[1]) : '';
+}
+
+function filenameFromUrl(url) {
+  try {
+    const pathname = new URL(url).pathname;
+    const last = pathname.split('/').filter(Boolean).pop() || '';
+    return decodeURIComponent(last) || 'Linked file';
+  } catch (error) {
+    return 'Linked file';
+  }
+}
+
+function looksBlockedOrPrivate(text) {
+  const lower = String(text || '').toLowerCase();
+  const privateMarkers = [
+    'request access',
+    'you need access',
+    'sign in',
+    'access denied',
+    'permission denied',
+    '403 forbidden',
+    'enable javascript',
+    'sorry, unable to open the file'
+  ];
+  return privateMarkers.some(marker => lower.includes(marker));
+}
+
+function cleanText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+async function debugLog(data, message, details = {}) {
+  if (!data.debugMode) return;
+
+  const entry = {
+    time: new Date().toISOString(),
+    message,
+    details
+  };
+  const line = `[Fiverr AI Debug] ${entry.time} ${message} ${JSON.stringify(details)}`;
+  console.log(line);
+
+  try {
+    const previous = await chrome.storage.local.get(['fiverrAiLastDebug']);
+    const next = `${previous.fiverrAiLastDebug || ''}\n${line}`.trim().split('\n').slice(-40).join('\n');
+    await chrome.storage.local.set({ fiverrAiLastDebug: next });
+  } catch (error) {
+    console.warn('[Fiverr AI Debug] Could not store debug log', error);
+  }
 }
 
 async function getOpenRouterModels({ forceRefresh = false } = {}) {

@@ -66,15 +66,30 @@ function setButtonLoading(btn, loading) {
 }
 
 function extractChatContext() {
-  const pageHints = getPageHints();
-  const messages = extractStructuredMessages();
+  var pageHints = getPageHints();
+  var messages = extractStructuredMessages();
+  var links = extractVisibleLinks();
+  var linkText = links.length > 0 ? "Visible client links:\n" + links.map(function(u){ return "- " + u; }).join("\n") : "";
 
   if (messages.length > 0) {
-    return [pageHints, messages.slice(-40).join('\n\n')].filter(Boolean).join('\n\n');
+    return [pageHints, messages.slice(-40).join("\n\n"), linkText].filter(Boolean).join("\n\n");
   }
 
-  const fallbackText = extractVisibleConversationText();
-  return [pageHints, fallbackText].filter(Boolean).join('\n\n').slice(-12000);
+  var fallbackText = extractVisibleConversationText();
+  return [pageHints, fallbackText, linkText].filter(Boolean).join("\n\n").slice(-12000);
+}
+
+
+function extractVisibleLinks() {
+  const containers = [
+    ...document.querySelectorAll('main, [role="main"], [class*="inbox" i], [class*="conversation" i], [class*="message" i], [class*="chat" i]')
+  ].filter(isVisible);
+  const scope = containers[0] || document.body;
+  const urls = [...scope.querySelectorAll('a[href]')]
+    .filter(isVisible)
+    .map((anchor) => anchor.href)
+    .filter((href) => /^https?:\/\//i.test(href));
+  return [...new Set(urls)].slice(0, 20);
 }
 
 function getPageHints() {

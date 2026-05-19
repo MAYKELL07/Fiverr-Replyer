@@ -43,6 +43,13 @@ textarea {
   resize: vertical;
 }
 
+textarea[readonly] {
+  background: #f0f4f2;
+  color: #46524b;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+}
+
 small {
   font-size: 11px;
   color: #666;
