@@ -30,7 +30,6 @@
       <textarea id="persona" rows="3" placeholder="e.g., I am a web developer. I write politely and concisely."></textarea>
     </div>
 
-
     <div class="section-card">
       <label class="checkbox-row">
         <input type="checkbox" id="linkProcessingEnabled">
@@ -40,8 +39,8 @@
         <input type="checkbox" id="debugMode">
         <span>Debug mode</span>
       </label>
-      <small>When enabled, the extension tries to read public Google Docs, PDFs, and web links. Debug mode writes detailed logs to the extension service worker console and stores the latest run summary.</small>
-      <textarea id="debugOutput" rows="4" readonly placeholder="Latest debug summary will appear here when debug mode is enabled."></textarea>
+      <small>When enabled, the extension tries to read public Google Docs, PDFs, and web links. Debug mode writes detailed logs including the full message text sent to the AI.</small>
+      <textarea id="debugOutput" rows="6" readonly placeholder="Latest debug summary will appear here when debug mode is enabled."></textarea>
     </div>
 
     <div class="section-card">
@@ -54,16 +53,19 @@
         <input type="password" id="mem0ApiKey" placeholder="Mem0 Platform API key">
       </div>
       <div class="form-group">
-        <label for="mem0UserId">Mem0 User ID:</label>
+        <label for="mem0UserId">Mem0 Base User ID:</label>
         <input type="text" id="mem0UserId" placeholder="fiverr-freelancer">
       </div>
-      <small>Uses Mem0's cloud API endpoints from the official mem0ai client. If Mem0 is disabled or fails, local Chrome memory is used as fallback.</small>
+      <small>Memory is stored <strong>per client</strong>. Mem0 user ID is auto-namespaced as <code>base-id::buyer-username</code>. Local memory is saved under a per-client key. If Mem0 is disabled or fails, local Chrome memory is used as fallback.</small>
     </div>
 
     <div class="form-group">
-      <label for="memory">Local Fallback Memory:</label>
+      <div class="label-row">
+        <label for="memory">Local Memory</label>
+        <span id="memoryClientLabel" class="client-label"></span>
+      </div>
       <textarea id="memory" rows="5" placeholder="Local saved facts will appear here..."></textarea>
-      <small>Only used when Mem0 is disabled or unavailable.</small>
+      <small id="memoryHint">Showing global memory. Open a Fiverr inbox conversation to see per-client memory.</small>
     </div>
 
     <div class="actions">

@@ -280,7 +280,7 @@ function createAIButton(mode) {
         return;
       }
 
-      chrome.runtime.sendMessage({ action: 'draftReply', chatContext }, function(response) {
+      chrome.runtime.sendMessage({ action: 'draftReply', chatContext, username: username || null }, function(response) {
         setButtonLoading(btn, false);
 
         if (chrome.runtime.lastError) {
