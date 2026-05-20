@@ -201,9 +201,9 @@ async function extractChatContext() {
     `Extraction method: ${method}`
   ].filter(Boolean).join('\n');
 
-  return [header, conversationText, linkSection].filter(Boolean).join('\n\n').slice(-18000);
+  const context = [header, conversationText, linkSection].filter(Boolean).join('\n\n').slice(-18000);
+  return { context: context, username: username };
 }
-
 // ─────────────────────────────────────────────
 //  REPLY INSERTION
 // ─────────────────────────────────────────────
@@ -272,7 +272,9 @@ function createAIButton(mode) {
     setButtonLoading(btn, true);
 
     try {
-      const chatContext = await extractChatContext();
+      const result = await extractChatContext();
+      const chatContext = result.context;
+      const clientUsername = result.username || null;
 
       if (!chatContext || chatContext.length < 30) {
         alert("No conversation text found. Make sure you're on a Fiverr inbox or order page.");
@@ -280,7 +282,7 @@ function createAIButton(mode) {
         return;
       }
 
-      chrome.runtime.sendMessage({ action: 'draftReply', chatContext, username: username || null }, function(response) {
+      chrome.runtime.sendMessage({ action: 'draftReply', chatContext, username: clientUsername }, function(response) {
         setButtonLoading(btn, false);
 
         if (chrome.runtime.lastError) {
