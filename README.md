@@ -25,8 +25,7 @@ Chrome extension that drafts Fiverr inbox replies using OpenRouter models, with 
 2. Open `chrome://extensions/`.
 3. Enable **Developer mode**.
 4. Click **Load unpacked**.
-5. Select this folder:  
-   `/home/runner/work/Fiverr-Replyer/Fiverr-Replyer`
+5. Select the repository root folder (the folder containing `manifest.json`).
 
 ## Setup
 
